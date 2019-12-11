@@ -14,15 +14,13 @@
 #include <cwctype>
 #include <algorithm>
 #include <vector>
+#include <filesystem>
 
-#include <sys/types.h>
-#include <sys/stat.h>
-
-#include "tinydir/tinydir.h"
 #include "md5/md5.h"
 #include "tinyxml2/tinyxml2.h"
 
 using namespace tinyxml2;
+namespace fs = std::filesystem;
 
 //! Конвертирует wstring в mbstring
 std::string wdtomb(const wchar_t* wstr)
@@ -47,30 +45,32 @@ std::wstring mbtowd(const char* mbstr)
 }
 
 //! Конвертирует Utf16 в Utf8
-std::string toUtf8(const std::wstring &wstr) {
+std::string toUtf8(std::wstring_view wstr) {
     std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
 
-    return converter.to_bytes(wstr);
+    return converter.to_bytes(wstr.data());
 }
 
 //! Конвертирует Utf8 в Utf16
-std::wstring toUtf16(const std::string &str) {
+std::wstring toUtf16(std::string_view str) {
     std::wstring_convert<std::codecvt_utf8<wchar_t>> converter;
 
-    return converter.from_bytes(str);
+    return converter.from_bytes(str.data());
 }
 
 int main(int argc, char *argv[])
 {
     setlocale(LC_ALL,"");
 
-    struct stat info;
-    if (argc < 2 || stat(argv[1], &info) != 0 || !(info.st_mode & S_IFDIR))
+    fs::path dirName;
+    if (argc < 2 || !fs::directory_entry(dirName = argv[1]).is_directory())
         return 0;
 
     XMLDocument doc;
     std::string str(std::istreambuf_iterator<char>(std::cin), {});
-    if (str.empty()) {
+    if (std::all_of(str.begin(), str.end(),
+                    [](const int &c){return std::isspace(c);}))
+    {
         doc.InsertFirstChild(doc.NewDeclaration());
     } else if (doc.Parse(str.c_str()) != XMLError::XML_SUCCESS) {
         std::wcout << L"Неверный формат входных данных" << std::endl;
@@ -83,18 +83,13 @@ int main(int argc, char *argv[])
         doc.InsertEndChild(hashtable);
     }
 
-    tinydir_file file;
-    tinydir_dir dir;
-    tinydir_open(&dir, argv[1]);
-    while (dir.has_next)
+    for(auto& p: fs::directory_iterator(dirName))
     {
-        tinydir_readfile(&dir, &file);
-        auto wdFileName = mbtowd(file.name);
-        size_t len = wdFileName.length();
-        if (!file.is_dir && len > 4 && wdFileName.compare(len - 4, 4, L".vrp") == 0)
+        if (p.is_regular_file() && p.path().extension() == fs::path(L".vrp"))
         {
-            // Получение имя файла в нижнем регистре без расширения
-            wdFileName.erase(wdFileName.end() - 4, wdFileName.end());
+            // Получение имени файла в нижнем регистре без расширения
+            std::wstring wdFileName = mbtowd(
+                        p.path().filename().stem().generic_string().c_str());
             std::transform(wdFileName.begin(), wdFileName.end(),
                            wdFileName.begin(),
                            [](const wchar_t  &c){ return std::towlower(c); }
@@ -107,7 +102,7 @@ int main(int argc, char *argv[])
                 item = item->NextSiblingElement("item");
             }
 
-            auto tmplHash = md5file(std::string(argv[1] + wdtomb(L"/") + file.name).c_str());
+            auto tmplHash = md5file(p.path().generic_string().c_str());
             XMLElement *value = nullptr;
             if (item == nullptr) {
                 // Добавляет описание файла
@@ -131,7 +126,6 @@ int main(int argc, char *argv[])
                 value->InsertEndChild(newHash);
             }
         }
-        tinydir_next(&dir);
     }
 
     XMLPrinter printer;
